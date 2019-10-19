@@ -1209,7 +1209,7 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     """
     # Load image and mask
     image = dataset.load_image(image_id)
-    mask, class_ids = dataset.load_mask(image_id)
+    mask, class_ids, landmark = dataset.load_mask(image_id)
     original_shape = image.shape
     image, window, scale, padding, crop = utils.resize_image(
         image,
@@ -1218,6 +1218,7 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
         max_dim=config.IMAGE_MAX_DIM,
         mode=config.IMAGE_RESIZE_MODE)
     mask = utils.resize_mask(mask, scale, padding, crop)
+    landmark = utils.resize_mask(landmark, scale, padding, crop)
 
     # Random horizontal flips.
     # TODO: will be removed in a future update in favor of augmentation
@@ -1226,6 +1227,7 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
         if random.randint(0, 1):
             image = np.fliplr(image)
             mask = np.fliplr(mask)
+            landmark = np.fliplr(landmark)
 
     # Augmentation
     # This requires the imgaug lib (https://github.com/aleju/imgaug)
@@ -1252,17 +1254,25 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
         # Change mask to np.uint8 because imgaug doesn't support np.bool
         mask = det.augment_image(mask.astype(np.uint8),
                                  hooks=imgaug.HooksImages(activator=hook))
+        # Change landmark to np.uint8 because imgaug doesn't support np.bool
+        landmark = det.augment_image(landmark.astype(np.uint8),
+                                 hooks=imgaug.HooksImages(activator=hook))
         # Verify that shapes didn't change
         assert image.shape == image_shape, "Augmentation shouldn't change image size"
         assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
+        assert landmark.shape == mask_shape, "Augmentation shouldn't change landmark size"
         # Change mask back to bool
         mask = mask.astype(np.bool)
+        landmark = landmark.astype(np.bool)
 
     # Note that some boxes might be all zeros if the corresponding mask got cropped out.
     # and here is to filter them out
     _idx = np.sum(mask, axis=(0, 1)) > 0
     mask = mask[:, :, _idx]
     class_ids = class_ids[_idx]
+
+    _idx = np.sum(landmark, axis=(0, 1)) > 0
+    landmark = landmark[:, :, _idx]
     # Bounding boxes. Note that some boxes might be all zeros
     # if the corresponding mask got cropped out.
     # bbox: [num_instances, (y1, x1, y2, x2)]
@@ -1278,6 +1288,7 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     # Resize masks to smaller size to reduce memory usage
     if use_mini_mask:
         mask = utils.minimize_mask(bbox, mask, config.MINI_MASK_SHAPE)
+        landmark = utils.minimize_mask(bbox, landmark, config.MINI_MASK_SHAPE)
 
     # Image meta data
     image_meta = compose_image_meta(image_id, original_shape, image.shape,
