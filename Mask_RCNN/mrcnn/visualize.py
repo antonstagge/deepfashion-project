@@ -79,8 +79,17 @@ def apply_mask(image, mask, color, alpha=0.5):
                                   image[:, :, c])
     return image
 
+def apply_landmark(image, landmark, color, alpha=0.5):
+    """Apply the given mask to the image.
+    """
+    for c in range(3):
+        image[:, :, c] = np.where(landmark == 0,
+                                  0,
+                                  image[:, :, c])
+    return image
 
-def display_instances(image, boxes, masks, class_ids, class_names,
+
+def display_instances(image, boxes, masks, landmarks, class_ids, class_names,
                       scores=None, title="",
                       figsize=(16, 16), ax=None,
                       show_mask=True, show_bbox=True,
@@ -103,6 +112,7 @@ def display_instances(image, boxes, masks, class_ids, class_names,
         print("\n*** No instances to display *** \n")
     else:
         assert boxes.shape[0] == masks.shape[-1] == class_ids.shape[0]
+        assert boxes.shape[0] == landmarks.shape[-1] == class_ids.shape[0]
 
     # If no axis is passed, create one and automatically call show()
     auto_show = False
@@ -148,8 +158,10 @@ def display_instances(image, boxes, masks, class_ids, class_names,
 
         # Mask
         mask = masks[:, :, i]
+        landmark = landmarks[:, :, i]
         if show_mask:
             masked_image = apply_mask(masked_image, mask, color)
+            masked_image = apply_landmark(masked_image, landmark, color)
 
         # Mask Polygon
         # Pad to ensure proper polygons for masks that touch image edges.

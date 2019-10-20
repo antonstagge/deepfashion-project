@@ -1228,7 +1228,7 @@ def mrcnn_bbox_loss_graph(target_bbox, target_class_ids, pred_bbox):
 
 
 def mrcnn_mask_loss_graph(target_masks, target_class_ids, pred_masks):
-    """Mask binary cross-entropy loss for the masks head.
+    """Mask or landmark binary cross-entropy loss for the masks head.
 
     target_masks: [batch, num_rois, height, width].
         A float32 tensor of values 0 or 1. Uses zero padding to fill array.
@@ -1236,9 +1236,6 @@ def mrcnn_mask_loss_graph(target_masks, target_class_ids, pred_masks):
     pred_masks: [batch, proposals, height, width, num_classes] float32 tensor
                 with values from 0 to 1.
     """
-    print(target_masks)
-    print(target_class_ids)
-    print(pred_masks)
     # Reshape for simplicity. Merge first two dimensions into one.
     target_class_ids = K.reshape(target_class_ids, (-1,))
     mask_shape = tf.shape(target_masks)
@@ -1259,47 +1256,6 @@ def mrcnn_mask_loss_graph(target_masks, target_class_ids, pred_masks):
     # Gather the masks (predicted and true) that contribute to loss
     y_true = tf.gather(target_masks, positive_ix)
     y_pred = tf.gather_nd(pred_masks, indices)
-
-    # Compute binary cross entropy. If no positive ROIs, then return 0.
-    # shape: [batch, roi, num_classes]
-    loss = K.switch(tf.size(y_true) > 0,
-                    K.binary_crossentropy(target=y_true, output=y_pred),
-                    tf.constant(0.0))
-    loss = K.mean(loss)
-    return loss
-
-def mrcnn_landmark_loss_graph(target_landmarks, target_class_ids, pred_landmarks):
-    """Mask binary cross-entropy loss for the landmark head.
-
-    target_landmarks: [batch, num_rois, height, width].
-        A float32 tensor of values 0 or 1. Uses zero padding to fill array.
-    target_class_ids: [batch, num_rois]. Integer class IDs. Zero padded.
-    pred_landmarks: [batch, proposals, height, width, num_classes] float32 tensor
-                with values from 0 to 1.
-    """
-    print(target_landmarks)
-    print(target_class_ids)
-    print(pred_landmarks)
-    # Reshape for simplicity. Merge first two dimensions into one.
-    target_class_ids = K.reshape(target_class_ids, (-1,))
-    landmark_shape = tf.shape(target_landmarks)
-    target_landmarks = K.reshape(target_landmarks, (-1, landmark_shape[2], landmark_shape[3]))
-    pred_shape = tf.shape(pred_landmarks)
-    pred_landmarks = K.reshape(pred_landmarks,
-                           (-1, pred_shape[2], pred_shape[3], pred_shape[4]))
-    # Permute predicted landmarks to [N, num_classes, height, width]
-    pred_landmarks = tf.transpose(pred_landmarks, [0, 3, 1, 2])
-
-    # Only positive ROIs contribute to the loss. And only
-    # the class specific landmark of each ROI.
-    positive_ix = tf.where(target_class_ids > 0)[:, 0]
-    positive_class_ids = tf.cast(
-        tf.gather(target_class_ids, positive_ix), tf.int64)
-    indices = tf.stack([positive_ix, positive_class_ids], axis=1)
-
-    # Gather the landmarks (predicted and true) that contribute to loss
-    y_true = tf.gather(target_landmarks, positive_ix)
-    y_pred = tf.gather_nd(pred_landmarks, indices)
 
     # Compute binary cross entropy. If no positive ROIs, then return 0.
     # shape: [batch, roi, num_classes]
@@ -1349,7 +1305,7 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
         max_dim=config.IMAGE_MAX_DIM,
         mode=config.IMAGE_RESIZE_MODE)
     mask = utils.resize_mask(mask, scale, padding, crop)
-    landmark = utils.resize_mask(landmark, scale, padding, crop)
+    landmark = utils.resize_landmark(landmark, scale, padding, crop)
 
     # Random horizontal flips.
     # TODO: will be removed in a future update in favor of augmentation
@@ -1427,6 +1383,18 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
 
     return image, image_meta, class_ids, bbox, mask, landmark
 
+def print_landmark(landmark):
+    bla = []
+    for c in range(landmark.shape[2]):
+        count = 0
+        for y in range(landmark.shape[0]):
+            for x in range(landmark.shape[1]):
+                if landmark[y][x][c] > 0:
+                    # print("landmark at: ")
+                    # print("y: " + str(y) + " x: " + str(x))
+                    count += 1
+        bla.append(count)
+    print(bla)
 
 def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
     """Generate targets for training Stage 2 classifier and mask heads.
@@ -2179,13 +2147,9 @@ class MaskRCNN():
                 [target_class_ids, mrcnn_class_logits, active_class_ids])
             bbox_loss = KL.Lambda(lambda x: mrcnn_bbox_loss_graph(*x), name="mrcnn_bbox_loss")(
                 [target_bbox, target_class_ids, mrcnn_bbox])
-            
-            print("mask loss")
             mask_loss = KL.Lambda(lambda x: mrcnn_mask_loss_graph(*x), name="mrcnn_mask_loss")(
                 [target_mask, target_class_ids, mrcnn_mask])
-            
-            print("landmark loss")
-            landmark_loss = KL.Lambda(lambda x: mrcnn_landmark_loss_graph(*x), name="mrcnn_landmark_loss")(
+            landmark_loss = KL.Lambda(lambda x: mrcnn_mask_loss_graph(*x), name="mrcnn_landmark_loss")(
                 [target_landmark, target_class_ids, mrcnn_landmark])
 
             # Model
