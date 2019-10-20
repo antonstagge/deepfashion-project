@@ -1,21 +1,35 @@
 import os
 import json
 import skimage.draw
+import time
 
 ROOT_DIR = os.path.abspath('../')
-DATASET_DIR = os.path.join(ROOT_DIR, 'datasets/tiny_deepfashion2')
-subsets = ['train', 'val']
+DATASET_DIR = os.path.join(ROOT_DIR, 'datasets/big_deepfashion2')
+#DATASET_DIR = os.path.join(ROOT_DIR, 'datasets/tiny_deepfashion2')
+subsets = ['val','train']
 
 for subset in subsets:
+
+    # For tracking progress
+    start = time.time()
+    progress = 0
+
+    print("Preprocessing of {} started. Please wait...".format(subset))
     dataset_dir = os.path.join(DATASET_DIR, subset)
     dataset_dir_image = os.path.join(dataset_dir, 'image')
     dataset_dir_annos = os.path.join(dataset_dir, 'annos')
     dataset_dir_annos_preprocessed = os.path.join(dataset_dir, 'annos_preprocessed')
 
+    #Create folder for preprocessed.
+    if(not os.path.exists(dataset_dir_annos_preprocessed)):
+        os.makedirs(dataset_dir_annos_preprocessed)
+
     annotations = [(pos_json.split('.')[0], json.load(open(os.path.join(
         dataset_dir_annos, pos_json)))) for pos_json in os.listdir(dataset_dir_annos)]
 
     preprocessed_annotations = []
+
+    print("Working on {} annotations".format(len(annotations)))
 
     # Add images
     for image_id, a in annotations:
@@ -61,5 +75,19 @@ for subset in subsets:
         image_annotations['clothes'] = clothing_segmentations
         preprocessed_annotations.append(image_annotations)
 
-        with open(os.path.join(dataset_dir_annos_preprocessed, 'annotations.json'), 'w') as f:
-            json.dump(preprocessed_annotations, f)
+                #To keep user updated on progress
+        progress += 1
+        if(progress%100 == 0 or progress == len(annotations)):
+            completed = 100*progress/len(annotations)
+            remaining = 100 - completed
+            end = time.time()
+            elapsed = end - start
+            ETA= (elapsed / completed)*(remaining)
+            print("{0:.2f}% done".format(completed))
+            print("\t{0:.2f} minutes left (estimate)".format(ETA/60))
+
+    print("Dumping annotations to file...")
+    with open(os.path.join(dataset_dir_annos_preprocessed, 'annotations.json'), 'w') as f:
+        json.dump(preprocessed_annotations, f)
+
+print("Done, after {} hours".format((end-start)/3600))
