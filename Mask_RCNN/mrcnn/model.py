@@ -1382,19 +1382,6 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
 
     return image, image_meta, class_ids, bbox, mask, landmark
 
-def print_landmark(landmark):
-    bla = []
-    for c in range(landmark.shape[2]):
-        count = 0
-        for y in range(landmark.shape[0]):
-            for x in range(landmark.shape[1]):
-                if landmark[y][x][c] > 0:
-                    # print("landmark at: ")
-                    # print("y: " + str(y) + " x: " + str(x))
-                    count += 1
-        bla.append(count)
-    print(bla)
-
 def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
     """Generate targets for training Stage 2 classifier and mask heads.
     This is not used in normal training. It's useful for debugging or to train
