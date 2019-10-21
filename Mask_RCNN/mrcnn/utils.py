@@ -546,7 +546,7 @@ def resize_landmark(landmark, scale, padding, crop=None):
         for x in range(landmark.shape[1]):
             for c in range(landmark.shape[2]):
                 if (landmark[y][x][c]):
-                    small_landmark[round(scale * y)][round(scale * x)][c] = 1
+                    small_landmark[math.floor(scale * y)][math.floor(scale * x)][c] = landmark[y][x][c]
     if crop is not None:
         y, x, h, w = crop
         small_landmark = small_landmark[y:y + h, x:x + w]
@@ -573,6 +573,25 @@ def minimize_mask(bbox, mask, mini_shape):
         m = resize(m, mini_shape)
         mini_mask[:, :, i] = np.around(m).astype(np.bool)
     return mini_mask
+
+def minimize_landmark(bbox, landmark, mini_shape):
+    """Resize landmarks to a smaller version to reduce memory load.
+    Mini-landmarks can be resized back to image scale using expand_masks()
+
+    See inspect_data.ipynb notebook for more details.
+    """
+    mini_landmark = np.zeros(mini_shape + (landmark.shape[-1],), dtype=np.uint8)
+    for i in range(landmark.shape[-1]):
+        # Pick slice and cast to uint8 in case load_landmark() returned wrong dtype
+        m = landmark[:, :, i].astype(np.uint8)
+        y1, x1, y2, x2 = bbox[i][:4]
+        m = m[y1:y2, x1:x2]
+        if m.size == 0:
+            raise Exception("Invalid bounding box with area of zero")
+        # Resize with bilinear interpolation
+        m = resize(m, mini_shape)
+        mini_landmark[:, :, i] = np.around(m).astype(np.uint8)
+    return mini_landmark
 
 
 def expand_mask(bbox, mini_mask, image_shape):

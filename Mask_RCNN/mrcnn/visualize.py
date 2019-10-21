@@ -85,9 +85,11 @@ def apply_landmark(image, landmark, color, alpha=0.5):
     """
     for y in range(landmark.shape[0]):
         for x in range(landmark.shape[1]):
-            if landmark[y][x] == 1:
+            if landmark[y][x]:
                 for c in range(3):
                     col = color[c] * 255
+                    if landmark[y][x] == 1:
+                        col = 0
                     image[y][x][c] = col
                     image[max(0, y-1)][x][c] = col
                     image[min(image.shape[0]-1, y+1)][x][c] = col
