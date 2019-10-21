@@ -15,6 +15,7 @@ import colorsys
 
 import numpy as np
 from skimage.measure import find_contours
+import skimage.draw
 import matplotlib.pyplot as plt
 from matplotlib import patches,  lines
 from matplotlib.patches import Polygon
@@ -79,8 +80,25 @@ def apply_mask(image, mask, color, alpha=0.5):
                                   image[:, :, c])
     return image
 
+def apply_landmark(image, landmark, color, alpha=0.5):
+    """Apply the given mask to the image.
+    """
+    for y in range(landmark.shape[0]):
+        for x in range(landmark.shape[1]):
+            if landmark[y][x]:
+                for c in range(3):
+                    col = color[c] * 255
+                    if landmark[y][x] == 1:
+                        col = 0
+                    image[y][x][c] = col
+                    image[max(0, y-1)][x][c] = col
+                    image[min(image.shape[0]-1, y+1)][x][c] = col
+                    image[y][min(image.shape[1]-1, x+1)][c] = col
+                    image[y][max(0, x-1)][c] = col
+    return image
 
-def display_instances(image, boxes, masks, class_ids, class_names,
+
+def display_instances(image, boxes, masks, landmarks, class_ids, class_names,
                       scores=None, title="",
                       figsize=(16, 16), ax=None,
                       show_mask=True, show_bbox=True,
@@ -103,6 +121,7 @@ def display_instances(image, boxes, masks, class_ids, class_names,
         print("\n*** No instances to display *** \n")
     else:
         assert boxes.shape[0] == masks.shape[-1] == class_ids.shape[0]
+        assert boxes.shape[0] == landmarks.shape[-1] == class_ids.shape[0]
 
     # If no axis is passed, create one and automatically call show()
     auto_show = False
@@ -148,8 +167,10 @@ def display_instances(image, boxes, masks, class_ids, class_names,
 
         # Mask
         mask = masks[:, :, i]
+        landmark = landmarks[:, :, i]
         if show_mask:
             masked_image = apply_mask(masked_image, mask, color)
+            masked_image = apply_landmark(masked_image, landmark, color)
 
         # Mask Polygon
         # Pad to ensure proper polygons for masks that touch image edges.

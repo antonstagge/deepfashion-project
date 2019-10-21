@@ -483,7 +483,7 @@ def overlaps_graph(boxes1, boxes2):
     return overlaps
 
 
-def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config):
+def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, gt_landmarks, config):
     """Generates detection targets for one image. Subsamples proposals and
     generates target class IDs, bounding box deltas, and masks for each.
 
@@ -519,6 +519,8 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
                                    name="trim_gt_class_ids")
     gt_masks = tf.gather(gt_masks, tf.where(non_zeros)[:, 0], axis=2,
                          name="trim_gt_masks")
+    gt_landmarks = tf.gather(gt_landmarks, tf.where(non_zeros)[:, 0], axis=2,
+                         name="trim_gt_landmarks")
 
     # Handle COCO crowds
     # A crowd box in COCO is a bounding box around several instances. Exclude
@@ -529,6 +531,7 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     gt_class_ids = tf.gather(gt_class_ids, non_crowd_ix)
     gt_boxes = tf.gather(gt_boxes, non_crowd_ix)
     gt_masks = tf.gather(gt_masks, non_crowd_ix, axis=2)
+    gt_landmarks = tf.gather(gt_landmarks, non_crowd_ix, axis=2)
 
     # Compute overlaps matrix [proposals, gt_boxes]
     overlaps = overlaps_graph(proposals, gt_boxes)
@@ -577,8 +580,10 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     # Assign positive ROIs to GT masks
     # Permute masks to [N, height, width, 1]
     transposed_masks = tf.expand_dims(tf.transpose(gt_masks, [2, 0, 1]), -1)
+    transposed_landmarks = tf.expand_dims(tf.transpose(gt_landmarks, [2, 0, 1]), -1)
     # Pick the right mask for each ROI
     roi_masks = tf.gather(transposed_masks, roi_gt_box_assignment)
+    roi_landmarks = tf.gather(transposed_landmarks, roi_gt_box_assignment)
 
     # Compute mask targets
     boxes = positive_rois
@@ -598,12 +603,17 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     masks = tf.image.crop_and_resize(tf.cast(roi_masks, tf.float32), boxes,
                                      box_ids,
                                      config.MASK_SHAPE)
+    landmarks = tf.image.crop_and_resize(tf.cast(roi_landmarks, tf.float32), boxes,
+                                     box_ids,
+                                     config.MASK_SHAPE)
     # Remove the extra dimension from masks.
     masks = tf.squeeze(masks, axis=3)
+    landmarks = tf.squeeze(landmarks, axis=3)
 
     # Threshold mask pixels at 0.5 to have GT masks be 0 or 1 to use with
     # binary cross entropy loss.
     masks = tf.round(masks)
+    landmarks = tf.round(landmarks)
 
     # Append negative ROIs and pad bbox deltas and masks that
     # are not used for negative ROIs with zeros.
@@ -615,8 +625,9 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     roi_gt_class_ids = tf.pad(roi_gt_class_ids, [(0, N + P)])
     deltas = tf.pad(deltas, [(0, N + P), (0, 0)])
     masks = tf.pad(masks, [[0, N + P], (0, 0), (0, 0)])
+    landmarks = tf.pad(landmarks, [[0, N + P], (0, 0), (0, 0)])
 
-    return rois, roi_gt_class_ids, deltas, masks
+    return rois, roi_gt_class_ids, deltas, masks, landmarks
 
 
 class DetectionTargetLayer(KE.Layer):
@@ -653,14 +664,15 @@ class DetectionTargetLayer(KE.Layer):
         gt_class_ids = inputs[1]
         gt_boxes = inputs[2]
         gt_masks = inputs[3]
+        gt_landmarks = inputs[4]
 
         # Slice the batch and run a graph for each slice
         # TODO: Rename target_bbox to target_deltas for clarity
-        names = ["rois", "target_class_ids", "target_bbox", "target_mask"]
+        names = ["rois", "target_class_ids", "target_bbox", "target_mask", "target_landmark"]
         outputs = utils.batch_slice(
-            [proposals, gt_class_ids, gt_boxes, gt_masks],
-            lambda w, x, y, z: detection_targets_graph(
-                w, x, y, z, self.config),
+            [proposals, gt_class_ids, gt_boxes, gt_masks, gt_landmarks],
+            lambda w, x, y, z, u: detection_targets_graph(
+                w, x, y, z, u, self.config),
             self.config.IMAGES_PER_GPU, names=names)
         return outputs
 
@@ -669,12 +681,12 @@ class DetectionTargetLayer(KE.Layer):
             (None, self.config.TRAIN_ROIS_PER_IMAGE, 4),  # rois
             (None, self.config.TRAIN_ROIS_PER_IMAGE),  # class_ids
             (None, self.config.TRAIN_ROIS_PER_IMAGE, 4),  # deltas
-            (None, self.config.TRAIN_ROIS_PER_IMAGE, self.config.MASK_SHAPE[0],
-             self.config.MASK_SHAPE[1])  # masks
+            (None, self.config.TRAIN_ROIS_PER_IMAGE, self.config.MASK_SHAPE[0], self.config.MASK_SHAPE[1]),  # masks
+            (None, self.config.TRAIN_ROIS_PER_IMAGE, self.config.MASK_SHAPE[0], self.config.MASK_SHAPE[1])  # landmarks
         ]
 
     def compute_mask(self, inputs, mask=None):
-        return [None, None, None, None]
+        return [None, None, None, None, None]
 
 
 ############################################################
@@ -1004,6 +1016,81 @@ def build_fpn_mask_graph(rois, feature_maps, image_meta,
                            name="mrcnn_mask")(x)
     return x
 
+def build_fpn_landmark_graph(rois, feature_maps, image_meta,
+                         pool_size, num_classes, train_bn=True):
+    """Builds the computation graph of the landmark head of Feature Pyramid Network.
+
+    rois: [batch, num_rois, (y1, x1, y2, x2)] Proposal boxes in normalized
+          coordinates.
+    feature_maps: List of feature maps from different layers of the pyramid,
+                  [P2, P3, P4, P5]. Each has a different resolution.
+    image_meta: [batch, (meta data)] Image details. See compose_image_meta()
+    pool_size: The width of the square feature map generated from ROI Pooling.
+    num_classes: number of classes, which determines the depth of the results
+    train_bn: Boolean. Train or freeze Batch Norm layers
+
+    Returns: Landmark [batch, num_rois, MASK_POOL_SIZE, MASK_POOL_SIZE, NUM_CLASSES]
+    """
+    # ROI Pooling
+    # Shape: [batch, num_rois, MASK_POOL_SIZE, MASK_POOL_SIZE, channels]
+    x = PyramidROIAlign([pool_size, pool_size],
+                        name="roi_align_landmark")([rois, image_meta] + feature_maps)
+
+    # Conv layers
+    x = KL.TimeDistributed(KL.Conv2D(512, (3, 3), padding="same"),
+                           name="mrcnn_landmark_conv1")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_landmark_bn1')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+    x = KL.TimeDistributed(KL.Conv2D(512, (3, 3), padding="same"),
+                           name="mrcnn_landmark_conv2")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_landmark_bn2')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+    x = KL.TimeDistributed(KL.Conv2D(512, (3, 3), padding="same"),
+                           name="mrcnn_landmark_conv3")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_landmark_bn3')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+    x = KL.TimeDistributed(KL.Conv2D(512, (3, 3), padding="same"),
+                           name="mrcnn_landmark_conv4")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_landmark_bn4')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+    x = KL.TimeDistributed(KL.Conv2D(512, (3, 3), padding="same"),
+                           name="mrcnn_landmark_conv5")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_landmark_bn5')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+    x = KL.TimeDistributed(KL.Conv2D(512, (3, 3), padding="same"),
+                           name="mrcnn_landmark_conv6")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_landmark_bn6')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+    x = KL.TimeDistributed(KL.Conv2D(512, (3, 3), padding="same"),
+                           name="mrcnn_landmark_conv7")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_landmark_bn7')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+    x = KL.TimeDistributed(KL.Conv2D(512, (3, 3), padding="same"),
+                           name="mrcnn_landmark_conv8")(x)
+    x = KL.TimeDistributed(BatchNorm(),
+                           name='mrcnn_landmark_bn8')(x, training=train_bn)
+    x = KL.Activation('relu')(x)
+
+    x = KL.TimeDistributed(KL.Conv2DTranspose(32, (2, 2), strides=2, activation="relu"),
+                           name="mrcnn_landmark_deconv")(x)
+    x = KL.TimeDistributed(KL.Conv2DTranspose(num_classes, (1, 1), strides=1, activation="sigmoid"),
+                           name="mrcnn_landmark")(x)
+    return x
+
 
 ############################################################
 #  Loss Functions
@@ -1141,7 +1228,7 @@ def mrcnn_bbox_loss_graph(target_bbox, target_class_ids, pred_bbox):
 
 
 def mrcnn_mask_loss_graph(target_masks, target_class_ids, pred_masks):
-    """Mask binary cross-entropy loss for the masks head.
+    """Mask or landmark binary cross-entropy loss for the masks head.
 
     target_masks: [batch, num_rois, height, width].
         A float32 tensor of values 0 or 1. Uses zero padding to fill array.
@@ -1206,10 +1293,13 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     mask: [height, width, instance_count]. The height and width are those
         of the image unless use_mini_mask is True, in which case they are
         defined in MINI_MASK_SHAPE.
+    landmark: [height, width, instance_count]. The height and width are those
+        of the image unless use_mini_mask is True, in which case they are
+        defined in MINI_MASK_SHAPE.
     """
     # Load image and mask
     image = dataset.load_image(image_id)
-    mask, class_ids = dataset.load_mask(image_id)
+    mask, class_ids, landmark = dataset.load_mask(image_id)
     original_shape = image.shape
     image, window, scale, padding, crop = utils.resize_image(
         image,
@@ -1218,6 +1308,7 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
         max_dim=config.IMAGE_MAX_DIM,
         mode=config.IMAGE_RESIZE_MODE)
     mask = utils.resize_mask(mask, scale, padding, crop)
+    landmark = utils.resize_landmark(landmark, scale, padding, crop)
 
     # Random horizontal flips.
     # TODO: will be removed in a future update in favor of augmentation
@@ -1226,6 +1317,7 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
         if random.randint(0, 1):
             image = np.fliplr(image)
             mask = np.fliplr(mask)
+            landmark = np.fliplr(landmark)
 
     # Augmentation
     # This requires the imgaug lib (https://github.com/aleju/imgaug)
@@ -1255,6 +1347,7 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
         # Verify that shapes didn't change
         assert image.shape == image_shape, "Augmentation shouldn't change image size"
         assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
+        assert landmark.shape == mask_shape, "Augmentation shouldn't change landmark size"
         # Change mask back to bool
         mask = mask.astype(np.bool)
 
@@ -1263,6 +1356,9 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     _idx = np.sum(mask, axis=(0, 1)) > 0
     mask = mask[:, :, _idx]
     class_ids = class_ids[_idx]
+
+    _idx = np.sum(landmark, axis=(0, 1)) > 0
+    landmark = landmark[:, :, _idx]
     # Bounding boxes. Note that some boxes might be all zeros
     # if the corresponding mask got cropped out.
     # bbox: [num_instances, (y1, x1, y2, x2)]
@@ -1278,13 +1374,13 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     # Resize masks to smaller size to reduce memory usage
     if use_mini_mask:
         mask = utils.minimize_mask(bbox, mask, config.MINI_MASK_SHAPE)
+        landmark = utils.minimize_landmark(bbox, landmark, config.MINI_MASK_SHAPE)
 
     # Image meta data
     image_meta = compose_image_meta(image_id, original_shape, image.shape,
                                     window, scale, active_class_ids)
 
-    return image, image_meta, class_ids, bbox, mask
-
+    return image, image_meta, class_ids, bbox, mask, landmark
 
 def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
     """Generate targets for training Stage 2 classifier and mask heads.
@@ -1698,12 +1794,12 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
 
             # If the image source is not to be augmented pass None as augmentation
             if dataset.image_info[image_id]['source'] in no_augmentation_sources:
-                image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
+                image, image_meta, gt_class_ids, gt_boxes, gt_masks, gt_landmarks = \
                 load_image_gt(dataset, config, image_id, augment=augment,
                               augmentation=None,
                               use_mini_mask=config.USE_MINI_MASK)
             else:
-                image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
+                image, image_meta, gt_class_ids, gt_boxes, gt_masks, gt_landmarks = \
                     load_image_gt(dataset, config, image_id, augment=augment,
                                 augmentation=augmentation,
                                 use_mini_mask=config.USE_MINI_MASK)
@@ -1726,6 +1822,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                     rois, mrcnn_class_ids, mrcnn_bbox, mrcnn_mask =\
                         build_detection_targets(
                             rpn_rois, gt_class_ids, gt_boxes, gt_masks, config)
+                    # TODO: build detection targets form landmarks?
 
             # Init batch arrays
             if b == 0:
@@ -1744,6 +1841,9 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                 batch_gt_masks = np.zeros(
                     (batch_size, gt_masks.shape[0], gt_masks.shape[1],
                      config.MAX_GT_INSTANCES), dtype=gt_masks.dtype)
+                batch_gt_landmarks = np.zeros(
+                    (batch_size, gt_landmarks.shape[0], gt_landmarks.shape[1],
+                     config.MAX_GT_INSTANCES), dtype=gt_landmarks.dtype)
                 if random_rois:
                     batch_rpn_rois = np.zeros(
                         (batch_size, rpn_rois.shape[0], 4), dtype=rpn_rois.dtype)
@@ -1756,6 +1856,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                             (batch_size,) + mrcnn_bbox.shape, dtype=mrcnn_bbox.dtype)
                         batch_mrcnn_mask = np.zeros(
                             (batch_size,) + mrcnn_mask.shape, dtype=mrcnn_mask.dtype)
+                        # TODO: batch_mrcnn_landmark ? 
 
             # If more instances than fits in the array, sub-sample from them.
             if gt_boxes.shape[0] > config.MAX_GT_INSTANCES:
@@ -1764,6 +1865,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                 gt_class_ids = gt_class_ids[ids]
                 gt_boxes = gt_boxes[ids]
                 gt_masks = gt_masks[:, :, ids]
+                gt_landmarks = gt_landmarks[:, :, ids]
 
             # Add to batch
             batch_image_meta[b] = image_meta
@@ -1773,6 +1875,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             batch_gt_class_ids[b, :gt_class_ids.shape[0]] = gt_class_ids
             batch_gt_boxes[b, :gt_boxes.shape[0]] = gt_boxes
             batch_gt_masks[b, :, :, :gt_masks.shape[-1]] = gt_masks
+            batch_gt_landmarks[b, :, :, :gt_landmarks.shape[-1]] = gt_landmarks
             if random_rois:
                 batch_rpn_rois[b] = rpn_rois
                 if detection_targets:
@@ -1780,12 +1883,13 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                     batch_mrcnn_class_ids[b] = mrcnn_class_ids
                     batch_mrcnn_bbox[b] = mrcnn_bbox
                     batch_mrcnn_mask[b] = mrcnn_mask
+                    # TODO: batch_mrcnn_landmarks[b] = mrcnn_landmark ?
             b += 1
 
             # Batch full?
             if b >= batch_size:
                 inputs = [batch_images, batch_image_meta, batch_rpn_match, batch_rpn_bbox,
-                          batch_gt_class_ids, batch_gt_boxes, batch_gt_masks]
+                          batch_gt_class_ids, batch_gt_boxes, batch_gt_masks, batch_gt_landmarks]
                 outputs = []
 
                 if random_rois:
@@ -1797,6 +1901,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                             batch_mrcnn_class_ids, -1)
                         outputs.extend(
                             [batch_mrcnn_class_ids, batch_mrcnn_bbox, batch_mrcnn_mask])
+                        # TODO: batch_mrcnn_landmarks
 
                 yield inputs, outputs
 
@@ -1881,10 +1986,17 @@ class MaskRCNN():
                     shape=[config.MINI_MASK_SHAPE[0],
                            config.MINI_MASK_SHAPE[1], None],
                     name="input_gt_masks", dtype=bool)
+                input_gt_landmarks = KL.Input(
+                    shape=[config.MINI_MASK_SHAPE[0],
+                           config.MINI_MASK_SHAPE[1], None],
+                    name="input_gt_landmarks", dtype=bool)
             else:
                 input_gt_masks = KL.Input(
                     shape=[config.IMAGE_SHAPE[0], config.IMAGE_SHAPE[1], None],
                     name="input_gt_masks", dtype=bool)
+                input_gt_landmarks = KL.Input(
+                    shape=[config.IMAGE_SHAPE[0], config.IMAGE_SHAPE[1], None],
+                    name="input_gt_landmarks", dtype=bool)
         elif mode == "inference":
             # Anchors in normalized coordinates
             input_anchors = KL.Input(shape=[None, 4], name="input_anchors")
@@ -1985,9 +2097,9 @@ class MaskRCNN():
             # Subsamples proposals and generates target outputs for training
             # Note that proposal class IDs, gt_boxes, and gt_masks are zero
             # padded. Equally, returned rois and targets are zero padded.
-            rois, target_class_ids, target_bbox, target_mask =\
+            rois, target_class_ids, target_bbox, target_mask, target_landmark =\
                 DetectionTargetLayer(config, name="proposal_targets")([
-                    target_rois, input_gt_class_ids, gt_boxes, input_gt_masks])
+                    target_rois, input_gt_class_ids, gt_boxes, input_gt_masks, input_gt_landmarks])
 
             # Network Heads
             # TODO: verify that this handles zero padded ROIs
@@ -1998,6 +2110,12 @@ class MaskRCNN():
                                      fc_layers_size=config.FPN_CLASSIF_FC_LAYERS_SIZE)
 
             mrcnn_mask = build_fpn_mask_graph(rois, mrcnn_feature_maps,
+                                              input_image_meta,
+                                              config.MASK_POOL_SIZE,
+                                              config.NUM_CLASSES,
+                                              train_bn=config.TRAIN_BN)
+
+            mrcnn_landmark = build_fpn_landmark_graph(rois, mrcnn_feature_maps,
                                               input_image_meta,
                                               config.MASK_POOL_SIZE,
                                               config.NUM_CLASSES,
@@ -2017,16 +2135,18 @@ class MaskRCNN():
                 [target_bbox, target_class_ids, mrcnn_bbox])
             mask_loss = KL.Lambda(lambda x: mrcnn_mask_loss_graph(*x), name="mrcnn_mask_loss")(
                 [target_mask, target_class_ids, mrcnn_mask])
+            landmark_loss = KL.Lambda(lambda x: mrcnn_mask_loss_graph(*x), name="mrcnn_landmark_loss")(
+                [target_landmark, target_class_ids, mrcnn_landmark])
 
             # Model
             inputs = [input_image, input_image_meta,
-                      input_rpn_match, input_rpn_bbox, input_gt_class_ids, input_gt_boxes, input_gt_masks]
+                      input_rpn_match, input_rpn_bbox, input_gt_class_ids, input_gt_boxes, input_gt_masks, input_gt_landmarks]
             if not config.USE_RPN_ROIS:
                 inputs.append(input_rois)
             outputs = [rpn_class_logits, rpn_class, rpn_bbox,
-                       mrcnn_class_logits, mrcnn_class, mrcnn_bbox, mrcnn_mask,
+                       mrcnn_class_logits, mrcnn_class, mrcnn_bbox, mrcnn_mask, mrcnn_landmark,
                        rpn_rois, output_rois,
-                       rpn_class_loss, rpn_bbox_loss, class_loss, bbox_loss, mask_loss]
+                       rpn_class_loss, rpn_bbox_loss, class_loss, bbox_loss, mask_loss, landmark_loss]
             model = KM.Model(inputs, outputs, name='mask_rcnn')
         else:
             # Network Heads
@@ -2051,9 +2171,15 @@ class MaskRCNN():
                                               config.NUM_CLASSES,
                                               train_bn=config.TRAIN_BN)
 
+            mrcnn_landmark = build_fpn_landmark_graph(detection_boxes, mrcnn_feature_maps,
+                                              input_image_meta,
+                                              config.MASK_POOL_SIZE,
+                                              config.NUM_CLASSES,
+                                              train_bn=config.TRAIN_BN)
+
             model = KM.Model([input_image, input_image_meta, input_anchors],
                              [detections, mrcnn_class, mrcnn_bbox,
-                                 mrcnn_mask, rpn_rois, rpn_class, rpn_bbox],
+                                 mrcnn_mask, mrcnn_landmark, rpn_rois, rpn_class, rpn_bbox],
                              name='mask_rcnn')
 
         # Add multi-GPU support.
@@ -2164,7 +2290,7 @@ class MaskRCNN():
         self.keras_model._per_input_losses = {}
         loss_names = [
             "rpn_class_loss",  "rpn_bbox_loss",
-            "mrcnn_class_loss", "mrcnn_bbox_loss", "mrcnn_mask_loss"]
+            "mrcnn_class_loss", "mrcnn_bbox_loss", "mrcnn_mask_loss", "mrcnn_landmark_loss"]
         for name in loss_names:
             layer = self.keras_model.get_layer(name)
             if layer.output in self.keras_model.losses:
@@ -2414,7 +2540,7 @@ class MaskRCNN():
         windows = np.stack(windows)
         return molded_images, image_metas, windows
 
-    def unmold_detections(self, detections, mrcnn_mask, original_image_shape,
+    def unmold_detections(self, detections, mrcnn_mask, mrcnn_landmarks, original_image_shape,
                           image_shape, window):
         """Reformats the detections of one image from the format of the neural
         network output to a format suitable for use in the rest of the
@@ -2443,6 +2569,7 @@ class MaskRCNN():
         class_ids = detections[:N, 4].astype(np.int32)
         scores = detections[:N, 5]
         masks = mrcnn_mask[np.arange(N), :, :, class_ids]
+        landmarks = mrcnn_landmarks[np.arange(N), :, :, class_ids]
 
         # Translate normalized coordinates in the resized image to pixel
         # coordinates in the original image before resizing
@@ -2466,18 +2593,24 @@ class MaskRCNN():
             class_ids = np.delete(class_ids, exclude_ix, axis=0)
             scores = np.delete(scores, exclude_ix, axis=0)
             masks = np.delete(masks, exclude_ix, axis=0)
+            landmarks = np.delete(landmarks, exclude_ix, axis=0)
             N = class_ids.shape[0]
 
         # Resize masks to original image size and set boundary threshold.
         full_masks = []
+        full_landmarks = []
         for i in range(N):
             # Convert neural network mask to full size mask
             full_mask = utils.unmold_mask(masks[i], boxes[i], original_image_shape)
+            full_landmark = utils.unmold_mask(landmarks[i], boxes[i], original_image_shape)
             full_masks.append(full_mask)
+            full_landmarks.append(full_landmark)
         full_masks = np.stack(full_masks, axis=-1)\
             if full_masks else np.empty(original_image_shape[:2] + (0,))
+        full_landmarks = np.stack(full_landmarks, axis=-1)\
+            if full_landmarks else np.empty(original_image_shape[:2] + (0,))
 
-        return boxes, class_ids, scores, full_masks
+        return boxes, class_ids, scores, full_masks, full_landmarks
 
     def detect(self, images, verbose=0):
         """Runs the detection pipeline.
@@ -2520,13 +2653,13 @@ class MaskRCNN():
             log("image_metas", image_metas)
             log("anchors", anchors)
         # Run object detection
-        detections, _, _, mrcnn_mask, _, _, _ =\
+        detections, _, _, mrcnn_mask, mrcnn_landmark, _, _, _ =\
             self.keras_model.predict([molded_images, image_metas, anchors], verbose=0)
         # Process detections
         results = []
         for i, image in enumerate(images):
-            final_rois, final_class_ids, final_scores, final_masks =\
-                self.unmold_detections(detections[i], mrcnn_mask[i],
+            final_rois, final_class_ids, final_scores, final_masks, final_landmarks =\
+                self.unmold_detections(detections[i], mrcnn_mask[i], mrcnn_landmark[i],
                                        image.shape, molded_images[i].shape,
                                        windows[i])
             results.append({
@@ -2534,6 +2667,7 @@ class MaskRCNN():
                 "class_ids": final_class_ids,
                 "scores": final_scores,
                 "masks": final_masks,
+                "landmarks": final_landmarks,
             })
         return results
 
