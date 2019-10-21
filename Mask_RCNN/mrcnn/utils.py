@@ -491,20 +491,6 @@ def resize_image(image, min_dim=None, max_dim=None, min_scale=None, mode="square
         raise Exception("Mode {} not supported".format(mode))
     return image.astype(image_dtype), window, scale, padding, crop
 
-
-def print_landmark(landmark):
-    bla = []
-    for c in range(landmark.shape[2]):
-        count = 0
-        for y in range(landmark.shape[0]):
-            for x in range(landmark.shape[1]):
-                if landmark[y][x][c] > 0:
-                    # print("landmark at: ")
-                    # print("y: " + str(y) + " x: " + str(x))
-                    count += 1
-        bla.append(count)
-    print(bla)
-
 def resize_mask(mask, scale, padding, crop=None):
     """Resizes a mask using the given scale and padding.
     Typically, you get the scale and padding from resize_image() to
