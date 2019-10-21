@@ -15,6 +15,7 @@ import colorsys
 
 import numpy as np
 from skimage.measure import find_contours
+import skimage.draw
 import matplotlib.pyplot as plt
 from matplotlib import patches,  lines
 from matplotlib.patches import Polygon
@@ -82,10 +83,16 @@ def apply_mask(image, mask, color, alpha=0.5):
 def apply_landmark(image, landmark, color, alpha=0.5):
     """Apply the given mask to the image.
     """
-    for c in range(3):
-        image[:, :, c] = np.where(landmark == 0,
-                                  0,
-                                  image[:, :, c])
+    for y in range(landmark.shape[0]):
+        for x in range(landmark.shape[1]):
+            if landmark[y][x] == 1:
+                for c in range(3):
+                    col = color[c] * 255
+                    image[y][x][c] = col
+                    image[max(0, y-1)][x][c] = col
+                    image[min(image.shape[0]-1, y+1)][x][c] = col
+                    image[y][min(image.shape[1]-1, x+1)][c] = col
+                    image[y][max(0, x-1)][c] = col
     return image
 
 
