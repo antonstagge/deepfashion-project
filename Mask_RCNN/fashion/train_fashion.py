@@ -72,6 +72,8 @@ model.train(dataset_train, dataset_val,
             epochs=1, 
             layers='heads')
 
+
+"""
 # Fine tune all layers
 # Passing layers="all" trains all layers. You can also 
 # pass a regular expression to select which layers to
@@ -80,6 +82,7 @@ model.train(dataset_train, dataset_val,
             learning_rate=config.LEARNING_RATE / 10,
             epochs=2, 
             layers="all")
+"""
 
 # Save weights
 # Typically not needed because callbacks save after every epoch
