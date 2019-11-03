@@ -532,7 +532,7 @@ def resize_landmark(landmark, scale, padding, crop=None):
         for x in range(landmark.shape[1]):
             for c in range(landmark.shape[2]):
                 if (landmark[y][x][c]):
-                    small_landmark[math.floor(scale * y)][math.floor(scale * x)][c] = landmark[y][x][c]
+                    small_landmark[min(small_landmark.shape[0]-1, round(scale * y))][min(small_landmark.shape[1]-1, round(scale * x))][c] = landmark[y][x][c]
     if crop is not None:
         y, x, h, w = crop
         small_landmark = small_landmark[y:y + h, x:x + w]
