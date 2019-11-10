@@ -34,11 +34,11 @@ config.display()
 """ Prepare dataset """ 
 # TODO: change hardcoded dataset path
 dataset_train = FashionDataset()
-dataset_train.load_fashion(ROOT_DIR + '/datasets/tiny_deepfashion2', "train")
+dataset_train.load_fashion(ROOT_DIR + '/datasets/big_deepfashion2', "train")
 dataset_train.prepare()
 
 dataset_val = FashionDataset()
-dataset_val.load_fashion(ROOT_DIR + '/datasets/tiny_deepfashion2', "val")
+dataset_val.load_fashion(ROOT_DIR + '/datasets/big_deepfashion2', "val")
 dataset_val.prepare()
 
 
@@ -55,6 +55,11 @@ elif init_with == "last":
     # Load the last model you trained and continue training
     model.load_weights(model.find_last(), by_name=True)
 
+""" Callbacks """
+# These are added to the custom_callbacks in the training of the model
+import keras
+earlystop = keras.callbacks.EarlyStopping(monitor='val_loss', min_delta=0, patience=10, verbose=1, mode='auto')
+history = keras.callbacks.History()
 
 """ Training """
 # 
@@ -70,7 +75,8 @@ elif init_with == "last":
 model.train(dataset_train, dataset_val, 
             learning_rate=config.LEARNING_RATE, 
             epochs=1, 
-            layers='heads')
+            layers='heads',
+            custom_callbacks=[earlystop, history])
 
 
 """
@@ -89,3 +95,15 @@ model.train(dataset_train, dataset_val,
 # Uncomment to save manually
 model_path = os.path.join(MODEL_DIR, "mask_rcnn_fashion.h5")
 model.keras_model.save_weights(model_path)
+
+
+""" Pickle some additional information """
+import pickle
+
+#Store the history dict
+pickle_path = os.path.join(MODEL_DIR, "pickled_history")
+with open(pickle_path, 'wb') as file_pi:
+    pickle.dump(history.history, file_pi)
+
+
+
