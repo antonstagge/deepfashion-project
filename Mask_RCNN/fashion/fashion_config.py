@@ -10,31 +10,11 @@ class FashionConfig(Config):
 
     # Train on 1 GPU and 8 images per GPU. We can put multiple images on each
     # GPU because the images are small. Batch size is 8 (GPUs * images/GPU).
-    GPU_COUNT = 1
-    IMAGES_PER_GPU = 1
+    GPU_COUNT = 2
+    IMAGES_PER_GPU = 2
 
     # Number of classes (including background)
     NUM_CLASSES = 1 + 13  # background + 3 shapes
-    
-    """
-    # Use small images for faster training. Set the limits of the small side
-    # the large side, and that determines the image shape.
-    IMAGE_MIN_DIM = 128
-    IMAGE_MAX_DIM = 128
-
-    # Use smaller anchors because our image and objects are small
-    RPN_ANCHOR_SCALES = (8, 16, 32, 64, 128)  # anchor side in pixels
-
-    # Reduce training ROIs per image because the images are small and have
-    # few objects. Aim to allow ROI sampling to pick 33% positive ROIs.
-    TRAIN_ROIS_PER_IMAGE = 32
-
-    # Use a small epoch since the data is simple
-    STEPS_PER_EPOCH = 100
-
-    # use small validation steps since the epoch is small
-    VALIDATION_STEPS = 5
-    """
 
     # Number of training steps per epoch
     # This doesn't need to match the size of the training set. Tensorboard
@@ -43,7 +23,7 @@ class FashionConfig(Config):
     # Validation stats are also calculated at each epoch end and they
     # might take a while, so don't set this too small to avoid spending
     # a lot of time on validation stats.
-    STEPS_PER_EPOCH = 1000
+    STEPS_PER_EPOCH = 500
 
     # Number of validation steps to run at the end of every training epoch.
     # A bigger number improves accuracy of validation stats, but slows
@@ -78,8 +58,9 @@ class FashionConfig(Config):
     #         size IMAGE_MIN_DIM x IMAGE_MIN_DIM. Can be used in training only.
     #         IMAGE_MAX_DIM is not used in this mode.
     IMAGE_RESIZE_MODE = "square"
-    IMAGE_MIN_DIM = 800
-    IMAGE_MAX_DIM = 1344
+    IMAGE_MIN_DIM = 400
+    IMAGE_MAX_DIM = 640
+    BACKBONE = "resnet50"
 
     # Minimum probability value to accept a detected instance
     # ROIs below this threshold are skipped
